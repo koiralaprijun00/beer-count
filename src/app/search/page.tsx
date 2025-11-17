@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { fetchAllBeers, fetchUserBeers, incrementUserBeerCount, UserBeer } from '@/lib/firestore';
-import { Beer } from '@/data/beers';
+import { Beer, seededBeers } from '@/data/beers';
 import { LoadingState } from '@/components/LoadingState';
 
 export default function SearchPage() {
@@ -26,10 +26,21 @@ export default function SearchPage() {
     const load = async () => {
       if (!user) return;
       setLoadingData(true);
-      const [beerList, stats] = await Promise.all([fetchAllBeers(), fetchUserBeers(user.uid)]);
-      setBeers(beerList);
-      setUserBeers(stats);
-      setLoadingData(false);
+      try {
+        const [beerList, stats] = await Promise.all([
+          fetchAllBeers(),
+          fetchUserBeers(user.uid)
+        ]);
+        setBeers(beerList);
+        setUserBeers(stats);
+      } catch (error) {
+        console.error('Failed to load data:', error);
+        // Use seeded beers as fallback if Firestore fails
+        setBeers(seededBeers);
+        setUserBeers([]);
+      } finally {
+        setLoadingData(false);
+      }
     };
     load();
   }, [user]);

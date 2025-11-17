@@ -49,9 +49,14 @@ export const fetchBeerById = async (id: string): Promise<Beer | null> => {
 };
 
 export const fetchUserBeers = async (userId: string): Promise<UserBeer[]> => {
-  const q = query(collection(db, 'userBeers'), where('userId', '==', userId));
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as UserBeer) }));
+  try {
+    const q = query(collection(db, 'userBeers'), where('userId', '==', userId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as UserBeer) }));
+  } catch (error) {
+    console.error('Failed to fetch user beers', error);
+    return []; // Return empty array on error instead of hanging
+  }
 };
 
 export const fetchUserBeerEntry = async (

@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { onAuthStateChanged, type User } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 
 interface AuthContextValue {
@@ -27,9 +27,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       (firebaseUser) => {
         setUser(firebaseUser);
         setLoading(false);
+        setError(null); // Clear any previous errors on successful auth state
       },
       (err) => {
-        setError(err);
+        // Handle specific Firebase Auth errors
+        const errorCode = (err as any)?.code;
+        const errorMessage = err?.message || '';
+        if (errorCode === 'auth/configuration-not-found' || errorMessage.includes('CONFIGURATION_NOT_FOUND')) {
+          const configError = new Error(
+            'Firebase Authentication is not configured. Please enable Authentication in Firebase Console: ' +
+            'https://console.firebase.google.com/project/beer-count-55993/authentication'
+          );
+          setError(configError);
+        } else {
+          setError(err);
+        }
         setLoading(false);
       }
     );
