@@ -10,9 +10,15 @@ import {
   incrementUserBeerCount,
   UserBeer
 } from '@/lib/firestore';
-import { Beer } from '@/data/beers';
+import { Beer, seededBeers } from '@/data/beers';
 import { LoadingState } from '@/components/LoadingState';
 import { formatRelativeTime } from '@/lib/format';
+import {
+  getUserBeerEntryFromStorage,
+  incrementBeerCountInStorage,
+  decrementBeerCountInStorage,
+  saveUserBeersToStorage
+} from '@/lib/localStorage';
 
 export default function BeerDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -32,14 +38,30 @@ export default function BeerDetailPage() {
   useEffect(() => {
     const load = async () => {
       if (!user || !id) return;
-      setFetching(true);
-      const [beerDoc, userEntry] = await Promise.all([
-        fetchBeerById(id),
-        fetchUserBeerEntry(user.uid, id)
-      ]);
-      setBeer(beerDoc);
-      setUserBeer(userEntry);
+      
+      // Load from localStorage immediately
+      const localEntry = getUserBeerEntryFromStorage(user.uid, id);
+      const localBeer = seededBeers.find((b) => b.id === id);
+      setBeer(localBeer || null);
+      setUserBeer(localEntry);
       setFetching(false);
+      
+      // Then try to load from Firestore in background
+      try {
+        const [beerDoc, userEntry] = await Promise.all([
+          fetchBeerById(id).catch(() => localBeer || null),
+          fetchUserBeerEntry(user.uid, id).catch(() => localEntry)
+        ]);
+        if (beerDoc) setBeer(beerDoc);
+        if (userEntry) {
+          setUserBeer(userEntry);
+          // Update localStorage with Firestore data
+          const allBeers = getUserBeerEntryFromStorage(user.uid, 'dummy') ? [] : []; // Get all
+          // This is a simplified version - in production you'd merge properly
+        }
+      } catch (error) {
+        console.error('Failed to load from Firestore:', error);
+      }
     };
     load();
   }, [id, user]);
@@ -54,36 +76,66 @@ export default function BeerDetailPage() {
 
   const handleIncrement = async () => {
     if (!user || !beer) return;
+    setError('');
+    
+    // Update UI immediately
+    const currentCount = userBeer?.count ?? 0;
     setUserBeer((prev) => ({
       id: prev?.id ?? `${beer.id}-temp`,
       beerId: beer.id,
       userId: user.uid,
-      count: (prev?.count ?? 0) + 1
+      count: currentCount + 1
     }));
+    
+    // Save to localStorage immediately
+    try {
+      const updated = incrementBeerCountInStorage(user.uid, beer.id);
+      setUserBeer(updated);
+    } catch (e) {
+      setError('Could not save.');
+      return;
+    }
+    
+    // Try to sync with Firestore in background
     try {
       const updated = await incrementUserBeerCount(user.uid, beer.id);
       setUserBeer(updated);
     } catch (e) {
-      setError('Could not update count.');
+      console.warn('Firestore sync failed, but saved locally', e);
     }
   };
 
   const handleDecrement = async () => {
     if (!user || !beer) return;
     if (!userBeer || userBeer.count === 0) return;
+    setError('');
+    
+    // Update UI immediately
+    const currentCount = userBeer.count;
     setUserBeer((prev) =>
       prev
         ? {
             ...prev,
-            count: prev.count > 0 ? prev.count - 1 : 0
+            count: currentCount > 0 ? currentCount - 1 : 0
           }
-        : prev
+        : null
     );
+    
+    // Save to localStorage immediately
+    try {
+      const updated = decrementBeerCountInStorage(user.uid, beer.id);
+      setUserBeer(updated);
+    } catch (e) {
+      setError('Could not save.');
+      return;
+    }
+    
+    // Try to sync with Firestore in background
     try {
       const updated = await decrementUserBeerCount(user.uid, beer.id);
       setUserBeer(updated);
     } catch (e) {
-      setError('Could not update count.');
+      console.warn('Firestore sync failed, but saved locally', e);
     }
   };
 

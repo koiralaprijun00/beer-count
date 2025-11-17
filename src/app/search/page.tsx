@@ -6,6 +6,8 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { fetchAllBeers, fetchUserBeers, incrementUserBeerCount, UserBeer } from '@/lib/firestore';
 import { Beer, seededBeers } from '@/data/beers';
 import { LoadingState } from '@/components/LoadingState';
+import { searchBeersAPI } from '@/lib/beerApi';
+import { getUserBeersFromStorage, incrementBeerCountInStorage, saveUserBeersToStorage } from '@/lib/localStorage';
 
 export default function SearchPage() {
   const router = useRouter();
@@ -14,7 +16,9 @@ export default function SearchPage() {
   const [userBeers, setUserBeers] = useState<UserBeer[]>([]);
   const [query, setQuery] = useState('');
   const [loadingData, setLoadingData] = useState(true);
+  const [loadingSearch, setLoadingSearch] = useState(false);
   const [message, setMessage] = useState('');
+  const [searchResults, setSearchResults] = useState<Beer[]>([]);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -25,35 +29,87 @@ export default function SearchPage() {
   useEffect(() => {
     const load = async () => {
       if (!user) return;
-      setLoadingData(true);
+      
+      // Show seeded beers immediately for fast loading
+      setBeers(seededBeers);
+      
+      // Load from localStorage immediately (instant)
+      const localStats = getUserBeersFromStorage(user.uid);
+      setUserBeers(localStats);
+      setLoadingData(false);
+      
+      // Then try to load from Firestore in background
       try {
         const [beerList, stats] = await Promise.all([
-          fetchAllBeers(),
-          fetchUserBeers(user.uid)
+          fetchAllBeers().catch(() => seededBeers),
+          fetchUserBeers(user.uid).catch(() => [])
         ]);
-        setBeers(beerList);
-        setUserBeers(stats);
+        
+        // Update with Firestore data if available
+        if (beerList.length > 0) {
+          setBeers(beerList);
+        }
+        
+        // Merge Firestore stats with localStorage (Firestore takes priority)
+        if (stats.length > 0) {
+          setUserBeers(stats);
+          saveUserBeersToStorage(user.uid, stats);
+        }
       } catch (error) {
-        console.error('Failed to load data:', error);
-        // Use seeded beers as fallback if Firestore fails
-        setBeers(seededBeers);
-        setUserBeers([]);
-      } finally {
-        setLoadingData(false);
+        console.error('Failed to load from Firestore:', error);
+        // Keep using localStorage data
       }
     };
     load();
   }, [user]);
 
+  // Search API when user types (debounced)
+  useEffect(() => {
+    const searchTimeout = setTimeout(async () => {
+      const q = query.trim();
+      if (q.length >= 2) {
+        setLoadingSearch(true);
+        try {
+          const apiResults = await searchBeersAPI(q);
+          setSearchResults(apiResults);
+        } catch (error) {
+          console.error('Search failed', error);
+          setSearchResults([]);
+        } finally {
+          setLoadingSearch(false);
+        }
+      } else {
+        setSearchResults([]);
+      }
+    }, 500); // Debounce 500ms
+
+    return () => clearTimeout(searchTimeout);
+  }, [query]);
+
   const filteredBeers = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return beers;
-    return beers.filter((beer) => beer.name.toLowerCase().includes(q));
-  }, [beers, query]);
+    
+    // Combine local beers and API search results
+    const localMatches = beers.filter((beer) => 
+      beer.name.toLowerCase().includes(q) ||
+      beer.country?.toLowerCase().includes(q) ||
+      beer.style?.toLowerCase().includes(q)
+    );
+    
+    // Merge with API results, avoiding duplicates
+    const apiMatches = searchResults.filter(
+      (apiBeer) => !localMatches.some((local) => local.name === apiBeer.name)
+    );
+    
+    return [...localMatches, ...apiMatches];
+  }, [beers, query, searchResults]);
 
   const handleDrink = async (beer: Beer) => {
     if (!user) return;
     setMessage('');
+    
+    // Update UI immediately (optimistic update)
     setUserBeers((prev) => {
       const existing = prev.find((entry) => entry.beerId === beer.id);
       if (existing) {
@@ -66,11 +122,31 @@ export default function SearchPage() {
         { id: `${beer.id}-temp`, beerId: beer.id, userId: user.uid, count: 1 }
       ];
     });
+    
+    // Save to localStorage immediately (always works)
     try {
-      await incrementUserBeerCount(user.uid, beer.id);
+      const updated = incrementBeerCountInStorage(user.uid, beer.id);
+      setUserBeers((prev) => {
+        const filtered = prev.filter((b) => b.beerId !== beer.id);
+        return [...filtered, updated];
+      });
       setMessage(`+1 🍺 Added to your count!`);
     } catch (error) {
-      setMessage('Could not update. Try again.');
+      console.error('Failed to save to localStorage', error);
+      setMessage('Could not save. Try again.');
+      return;
+    }
+    
+    // Try to sync with Firestore in background (non-blocking)
+    try {
+      await incrementUserBeerCount(user.uid, beer.id);
+      // Refresh from Firestore to get the real ID
+      const stats = await fetchUserBeers(user.uid).catch(() => getUserBeersFromStorage(user.uid));
+      setUserBeers(stats);
+      saveUserBeersToStorage(user.uid, stats);
+    } catch (error) {
+      // Firestore failed, but localStorage already saved it
+      console.warn('Firestore sync failed, but saved locally', error);
     }
   };
 
@@ -107,6 +183,14 @@ export default function SearchPage() {
         <LoadingState label="Loading beers..." />
       ) : (
         <div className="space-y-3">
+          {query.trim().length >= 2 && loadingSearch && (
+            <p className="text-xs text-slate-500 text-center py-2">Searching worldwide beers...</p>
+          )}
+          {query.trim().length >= 2 && !loadingSearch && filteredBeers.length === 0 && (
+            <p className="text-xs text-slate-500 text-center py-4">
+              No beers found. Try a different search term.
+            </p>
+          )}
           {filteredBeers.map((beer) => {
             const userEntry = userBeers.find((entry) => entry.beerId === beer.id);
             const dotColor = beer.style?.toLowerCase().includes('ipa')

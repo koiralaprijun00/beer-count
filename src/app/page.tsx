@@ -5,9 +5,10 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { fetchAllBeers, fetchUserBeers, UserBeer } from '@/lib/firestore';
-import { Beer } from '@/data/beers';
+import { Beer, seededBeers } from '@/data/beers';
 import { LoadingState } from '@/components/LoadingState';
 import { formatRelativeTime } from '@/lib/format';
+import { getUserBeersFromStorage, saveUserBeersToStorage } from '@/lib/localStorage';
 
 export default function HomePage() {
   const { user, loading } = useCurrentUser();
@@ -77,11 +78,27 @@ const Dashboard = () => {
   useEffect(() => {
     const load = async () => {
       if (!user) return;
-      setLoadingData(true);
-      const [stats, beers] = await Promise.all([fetchUserBeers(user.uid), fetchAllBeers()]);
-      setUserBeers(stats);
-      setBeerCatalog(beers);
+      
+      // Load from localStorage immediately (instant)
+      const localStats = getUserBeersFromStorage(user.uid);
+      setUserBeers(localStats);
+      setBeerCatalog(seededBeers);
       setLoadingData(false);
+      
+      // Then try to load from Firestore in background
+      try {
+        const [stats, beers] = await Promise.all([
+          fetchUserBeers(user.uid).catch(() => localStats),
+          fetchAllBeers().catch(() => seededBeers)
+        ]);
+        
+        setUserBeers(stats);
+        setBeerCatalog(beers);
+        saveUserBeersToStorage(user.uid, stats);
+      } catch (error) {
+        console.error('Failed to load from Firestore:', error);
+        // Keep using localStorage data
+      }
     };
     load();
   }, [user]);
